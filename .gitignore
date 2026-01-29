@@ -1,0 +1,53 @@
+# ==== .NET ====
+**/bin/
+**/obj/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.log
+
+# User-specific files
+*.suo
+*.user
+*.csproj.user
+*.vbproj.user
+*.dbmdl
+
+# VS settings
+.vscode/
+.vs/
+
+# NuGet
+*.nupkg
+*.snupkg
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+
+# Configs cục bộ
+appsettings.Development.json
+appsettings.Local.json
+
+# ==== Node / React ====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output FE
+dist/
+build/
+
+# ==== Common ====
+logs/
+temp/
+tmp/
+.DS_Store
+Thumbs.db
+
+
+# Secrets
+appsettings.json
