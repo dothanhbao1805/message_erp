@@ -27,12 +27,33 @@ namespace messenger.Extensions
             );
         }
 
+        // SignalR Configuration
+        public static void ConfigureSignalR(this IServiceCollection services)
+        {
+            services.AddSignalR(options =>
+            {
+                // Enable detailed errors (chỉ dùng trong Development)
+                options.EnableDetailedErrors = true;
+
+                // Cấu hình timeout
+                options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+                options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+
+                // Max message size (2MB)
+                options.MaximumReceiveMessageSize = 2 * 1024 * 1024;
+
+                // Streaming
+                options.StreamBufferCapacity = 10;
+            });
+        }
+
         // JWT Authentication
         public static void ConfigureJWT(this IServiceCollection services, IConfiguration configuration)
         {
             var jwtSettings = configuration.GetSection("Jwt");
             var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]!);
 
+            JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
             services.AddAuthentication(options =>
             {
                 options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -50,9 +71,28 @@ namespace messenger.Extensions
                     ValidAudience = jwtSettings["Audience"],
                     IssuerSigningKey = new SymmetricSecurityKey(key),
                     ClockSkew = TimeSpan.Zero,
-                    RoleClaimType = "role",
-                    NameClaimType = "name"
+                    RoleClaimType = "http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
+                    NameClaimType = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
                 };
+
+
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+
+                        // Nếu request đến SignalR hub và có token
+                        if (!string.IsNullOrEmpty(accessToken) &&
+                            path.StartsWithSegments("/hubs"))
+                        {
+                            context.Token = accessToken;
+                        }
+                        return Task.CompletedTask;
+                    }
+                };
+
             });
         }
 
@@ -61,11 +101,18 @@ namespace messenger.Extensions
         {
             services.AddCors(options =>
             {
-                options.AddPolicy("AllowAll",
-                    builder => builder
-                        .AllowAnyOrigin()
+                options.AddPolicy("AllowAll", builder =>
+                {
+                    builder
+                        .WithOrigins(
+                            "http://localhost:3000",     // React
+                            "http://localhost:5173"     // Vite 
+                        )
+                        .SetIsOriginAllowed(_ => true)
+                        .AllowAnyHeader()
                         .AllowAnyMethod()
-                        .AllowAnyHeader());
+                        .AllowCredentials();  // ← QUAN TRỌNG cho SignalR!
+                });
             });
         }
 

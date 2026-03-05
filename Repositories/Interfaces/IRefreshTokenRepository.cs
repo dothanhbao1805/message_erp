@@ -9,5 +9,6 @@ namespace messenger.Repositories.Interfaces
         Task<bool> RevokeAsync(string token);
         Task<bool> RevokeAllUserTokensAsync(int Id);
         Task<List<RefreshToken>> GetActiveTokensByIdAsync(int Id);
+        Task CleanExpiredTokensAsync();
     }
 }

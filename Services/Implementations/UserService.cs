@@ -30,5 +30,11 @@ namespace messenger.Services.Implementations
             return _mapper.Map<UsersDTO>(users);
         }
 
+        public async Task<UsersDTO?> GetByEmailAsync(SearchUserDTO searchUserDTO)
+        {
+            var user = await _userRepository.GetUserByEmailAsync(searchUserDTO.Email);
+            return _mapper.Map<UsersDTO>(user);
+        }
+
     }
 }

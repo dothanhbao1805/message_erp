@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SignalR Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@latest/dist/browser/signalr.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        input, button { margin: 5px; padding: 8px; }
+        #token { width: 600px; }
+        #console { 
+            border: 1px solid #ccc; 
+            padding: 10px; 
+            height: 400px; 
+            overflow-y: scroll; 
+            background: #f5f5f5; 
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
+        .info { color: blue; }
+    </style>
+</head>
+<body>
+    <h1>SignalR Chat Test</h1>
+    
+    <div>
+        <label><strong>Backend URL:</strong></label><br>
+        <input type="text" id="backendUrl" value="http://localhost:5079">
+    </div>
+    
+    <div style="margin-top: 10px;">
+        <label><strong>JWT Token:</strong></label><br>
+        <input type="text" id="token" placeholder="Paste JWT Token here (get from /api/auth/login)">
+    </div>
+    
+    <div style="margin-top: 10px;">
+        <button onclick="connect()" style="background: #4CAF50; color: white; font-weight: bold;">🔌 Connect</button>
+        <button onclick="disconnect()" style="background: #f44336; color: white;">❌ Disconnect</button>
+        <span id="status" style="margin-left: 10px; font-weight: bold;"></span>
+    </div>
+    
+    <hr>
+    
+    <div style="margin-top: 20px;">
+        <h3>Send Message:</h3>
+        <input type="number" id="conversationId" placeholder="Conversation ID" value="1" style="width: 150px;">
+        <input type="text" id="message" placeholder="Type message..." style="width: 300px;">
+        <button onclick="sendMessage()" style="background: #2196F3; color: white;">📤 Send</button>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <button onclick="startTyping()">✍️ Start Typing</button>
+        <button onclick="stopTyping()">🛑 Stop Typing</button>
+        <button onclick="clearConsole()">🗑️ Clear Console</button>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <h3>Console:</h3>
+        <div id="console"></div>
+    </div>
+
+    <script>
+        let connection = null;
+
+        function setStatus(text, color) {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.style.color = color;
+        }
+
+        function log(message, type = 'info') {
+            const consoleDiv = document.getElementById('console');
+            const time = new Date().toLocaleTimeString();
+            const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+            consoleDiv.innerHTML += `<div class="${className}">[${time}] ${message}</div>`;
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        function clearConsole() {
+            document.getElementById('console').innerHTML = '';
+            log('Console cleared', 'info');
+        }
+
+        async function connect() {
+            const backendUrl = document.getElementById('backendUrl').value.trim();
+            const token = document.getElementById('token').value.trim();
+            
+            if (!token) {
+                alert('❌ Please enter JWT token!\n\nGet token from: POST /api/auth/login');
+                return;
+            }
+
+            if (connection) {
+                log('Already connected. Disconnect first.', 'error');
+                return;
+            }
+
+            setStatus('🔄 Connecting...', 'orange');
+            log('Attempting to connect to SignalR Hub...', 'info');
+            log(`URL: ${backendUrl}/hubs/chat`, 'info');
+
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl(`${backendUrl}/hubs/chat`, {
+                    accessTokenFactory: () => {
+                        log('🔑 Providing JWT token to SignalR...', 'info');
+                        return token;
+                    }
+                })
+                .withAutomaticReconnect()
+                .configureLogging(signalR.LogLevel.Debug)
+                .build();
+
+            // Event handlers
+            connection.on("ReceiveMessage", (message) => {
+                log(`📨 <strong>ReceiveMessage:</strong><br>${JSON.stringify(message, null, 2)}`, 'success');
+            });
+
+            connection.on("UserTyping", (data) => {
+                log(`✍️ ${data.userName} is typing in conversation ${data.conversationId}`, 'info');
+            });
+
+            connection.on("UserStoppedTyping", (data) => {
+                log(`🛑 User ${data.userId} stopped typing`, 'info');
+            });
+
+            connection.on("MessageRead", (data) => {
+                log(`✅ Message ${data.messageId} read by user ${data.userId} at ${data.readAt}`, 'success');
+            });
+
+            connection.on("UserOnline", (userId) => {
+                log(`🟢 User ${userId} is now online`, 'success');
+            });
+
+            connection.on("UserOffline", (userId, lastSeen) => {
+                log(`⚫ User ${userId} went offline at ${lastSeen}`, 'info');
+            });
+
+            connection.onclose((error) => {
+                setStatus('❌ Disconnected', 'red');
+                if (error) {
+                    log(`❌ Connection closed with error: ${error.message}`, 'error');
+                } else {
+                    log('Connection closed normally', 'info');
+                }
+                connection = null;
+            });
+
+            connection.onreconnecting((error) => {
+                setStatus('🔄 Reconnecting...', 'orange');
+                log(`🔄 Reconnecting... ${error?.message || ''}`, 'info');
+            });
+
+            connection.onreconnected((connectionId) => {
+                setStatus('✅ Reconnected', 'green');
+                log(`✅ Reconnected! ConnectionId: ${connectionId}`, 'success');
+            });
+
+            try {
+                await connection.start();
+                setStatus('✅ Connected', 'green');
+                log(`✅ <strong>Successfully connected to SignalR Hub!</strong>`, 'success');
+                log(`ConnectionId: ${connection.connectionId}`, 'success');
+            } catch (err) {
+                setStatus('❌ Connection Failed', 'red');
+                log(`❌ <strong>Connection Error:</strong> ${err.message}`, 'error');
+                
+                if (err.message.includes('401')) {
+                    log('💡 <strong>Hint:</strong> JWT token might be expired or invalid. Get a new token from /api/auth/login', 'error');
+                } else if (err.message.includes('Failed to fetch')) {
+                    log('💡 <strong>Hint:</strong> Backend might not be running. Check if dotnet run is active.', 'error');
+                }
+                
+                console.error('Full error:', err);
+                connection = null;
+            }
+        }
+
+        async function disconnect() {
+            if (connection) {
+                await connection.stop();
+                setStatus('⚫ Disconnected', 'gray');
+                log("🔌 Disconnected from SignalR Hub", 'info');
+                connection = null;
+            } else {
+                log("Not connected", 'error');
+            }
+        }
+
+        async function sendMessage() {
+            if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+                alert('❌ Please connect first!');
+                return;
+            }
+
+            const conversationId = parseInt(document.getElementById('conversationId').value);
+            const content = document.getElementById('message').value.trim();
+
+            if (!content) {
+                alert('❌ Please enter a message!');
+                return;
+            }
+
+            try {
+                log(`📤 Sending message to conversation ${conversationId}...`, 'info');
+                await connection.invoke("SendMessage", conversationId, content, "text");
+                log(`✅ Message sent: "${content}"`, 'success');
+                document.getElementById('message').value = '';
+            } catch (err) {
+                log(`❌ Error sending message: ${err.message}`, 'error');
+                
+                if (err.message.includes('not a member')) {
+                    log('💡 <strong>Hint:</strong> You are not a member of this conversation. Create it first via /api/conversations', 'error');
+                }
+            }
+        }
+
+        async function startTyping() {
+            if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+                alert('❌ Please connect first!');
+                return;
+            }
+
+            const conversationId = parseInt(document.getElementById('conversationId').value);
+            
+            try {
+                await connection.invoke("StartTyping", conversationId);
+                log(`✍️ Started typing in conversation ${conversationId}`, 'info');
+            } catch (err) {
+                log(`❌ Error: ${err.message}`, 'error');
+            }
+        }
+
+        async function stopTyping() {
+            if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+                return;
+            }
+
+            const conversationId = parseInt(document.getElementById('conversationId').value);
+            
+            try {
+                await connection.invoke("StopTyping", conversationId);
+                log(`🛑 Stopped typing in conversation ${conversationId}`, 'info');
+            } catch (err) {
+                log(`❌ Error: ${err.message}`, 'error');
+            }
+        }
+
+        // Enter to send
+        document.getElementById('message')?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Initial log
+        log('🚀 SignalR Test Client Ready', 'success');
+        log('Steps: 1) Get JWT token from /api/auth/login  2) Paste token  3) Click Connect', 'info');
+    </script>
+</body>
+</html>

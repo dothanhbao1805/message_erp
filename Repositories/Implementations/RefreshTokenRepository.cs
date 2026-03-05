@@ -63,5 +63,15 @@ namespace messenger.Repositories.Implementations
                 .Where(rt => rt.Id == Id && !rt.IsRevoked && rt.ExpiresAt > DateTime.UtcNow)
                 .ToListAsync();
         }
+
+        public async Task CleanExpiredTokensAsync()
+        {
+            var expiredTokens = await _context.RefreshTokens
+                .Where(r => r.ExpiresAt < DateTime.UtcNow || r.IsRevoked)
+                .ToListAsync();
+
+            _context.RefreshTokens.RemoveRange(expiredTokens);
+            await _context.SaveChangesAsync();
+        }
     }
 }
