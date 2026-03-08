@@ -122,6 +122,7 @@ namespace messenger.Extensions
             // Thêm các repository khác ở đây
             services.AddScoped<IUserRepository, UserRepository>();
             services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+            services.AddScoped<IConversationRepository, ConversationRepository>();
         }
 
         // Register all Services
@@ -132,6 +133,7 @@ namespace messenger.Extensions
             services.AddScoped<IAuthService, AuthService>();
             services.AddScoped<IJwtService, JwtService>();
             services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+            services.AddScoped<IConversationService, ConversationService>();
         }
 
         // Other Configurations

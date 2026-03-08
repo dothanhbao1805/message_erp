@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using messenger.Data;
-using messenger.Models;
-using Microsoft.EntityFrameworkCore;
+using messenger.DTOs;
+using messenger.Services.Interfaces;
 using System.Security.Claims;
 
 namespace messenger.Controllers.site
@@ -12,102 +11,22 @@ namespace messenger.Controllers.site
     [Route("api/conversations")]
     public class ConversationsController : ControllerBase
     {
-        private readonly MessengerContext _context;
+        private readonly IConversationService _service;
 
-        public ConversationsController(MessengerContext context)
+        public ConversationsController(IConversationService service)
         {
-            _context = context;
+            _service = service;
         }
+
+        // Lấy userId từ JWT token — dùng lại nhiều nơi nên tách ra helper
+        private int GetUserId() =>
+            int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
         // GET: api/conversations
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<object>>> GetConversations()
+        public async Task<ActionResult> GetConversations()
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
-
-            var sql = @"
-        SELECT 
-            c.Id,
-            c.Name,
-            c.Type,
-            c.Avatar,
-            lm.Id AS LastMessageId,
-            lm.Content AS LastMessageContent,
-            lm.SenderId AS LastMessageSenderId,
-            u.FullName AS LastMessageSenderName,
-            lm.CreatedAt AS LastMessageCreatedAt,
-            cm.IsPinned,
-            cm.IsMuted,
-            cm.LastSeenMessageId,
-            COALESCE(lm.CreatedAt, '1900-01-01') AS SortDate
-        FROM ConversationMembers cm
-        INNER JOIN Conversations c ON cm.ConversationId = c.Id
-        LEFT JOIN Messages lm ON c.LastMessageId = lm.Id
-        LEFT JOIN Users u ON lm.SenderId = u.Id
-        WHERE cm.UserId = {0} AND cm.LeftAt IS NULL
-        ORDER BY SortDate DESC
-    ";
-
-            var conversationData = await _context.Database
-                .SqlQueryRaw<ConversationQueryResult>(sql, userId)
-                .ToListAsync();
-
-            var conversationIds = conversationData.Select(c => c.Id).ToList();
-
-            // Load members
-            var allMembers = await _context.ConversationMembers
-                .Where(cm => conversationIds.Contains(cm.ConversationId) && cm.LeftAt == null)
-                .Include(cm => cm.User)
-                .Select(cm => new
-                {
-                    conversationId = cm.ConversationId,
-                    id = cm.User.Id,
-                    fullName = cm.User.FullName,
-                    avatar = cm.User.Avatar
-                })
-                .ToListAsync();
-
-            // Load unread counts - FIX: Query riêng, không reference conversationData
-            var unreadMessages = await _context.Messages
-                .Where(m => conversationIds.Contains(m.ConversationId) && m.SenderId != userId)
-                .Select(m => new
-                {
-                    m.ConversationId,
-                    m.Id
-                })
-                .ToListAsync();
-
-            // Calculate unread counts in memory
-            var unreadCounts = conversationData
-                .Select(c => new
-                {
-                    conversationId = c.Id,
-                    count = unreadMessages.Count(m =>
-                        m.ConversationId == c.Id &&
-                        (c.LastSeenMessageId == null || m.Id > c.LastSeenMessageId))
-                })
-                .ToDictionary(x => x.conversationId, x => x.count);
-
-            // Build result
-            var result = conversationData.Select(c => new
-            {
-                id = c.Id,
-                name = c.Name,
-                type = c.Type,
-                avatar = c.Avatar,
-                lastMessage = c.LastMessageId != null ? new
-                {
-                    content = c.LastMessageContent,
-                    senderId = c.LastMessageSenderId,
-                    senderName = c.LastMessageSenderName,
-                    createdAt = c.LastMessageCreatedAt
-                } : null,
-                members = allMembers.Where(m => m.conversationId == c.Id),
-                unreadCount = unreadCounts.GetValueOrDefault(c.Id, 0),
-                isPinned = c.IsPinned,
-                isMuted = c.IsMuted
-            });
-
+            var result = await _service.GetConversations(GetUserId());
             return Ok(result);
         }
 
@@ -115,168 +34,48 @@ namespace messenger.Controllers.site
         [HttpPost]
         public async Task<ActionResult> CreateConversation([FromBody] CreateConversationDto dto)
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+            var (success, data, error, isNew) = await _service.CreateConversation(GetUserId(), dto);
 
-            if (dto.MemberIds.Contains(userId))
-            {
-                return BadRequest(new { error = "Cannot create conversation with yourself" });
-            }
+            if (!success)
+                return BadRequest(new { error });
 
-            // Kiểm tra private conversation đã tồn tại
-            if (dto.Type == "private" && dto.MemberIds.Count == 1)
-            {
-                var otherUserId = dto.MemberIds[0];
-                var existingConv = await _context.Conversations
-                    .Where(c => c.Type == "private")
-                    .Where(c => c.ConversationMembers.Count == 2
-                        && c.ConversationMembers.Any(m => m.UserId == userId && m.LeftAt == null)
-                        && c.ConversationMembers.Any(m => m.UserId == otherUserId && m.LeftAt == null))
-                    .Select(c => new
-                    {
-                        id = c.Id,
-                        name = c.Name,
-                        type = c.Type,
-                        avatar = c.Avatar,
-                        createdAt = c.CreatedAt
-                    })
-                    .FirstOrDefaultAsync();
+            // isNew = false: conversation đã tồn tại → 200 OK
+            // isNew = true:  conversation mới tạo   → 201 Created
+            if (!isNew)
+                return Ok(data);
 
-                if (existingConv != null)
-                {
-                    return Ok(existingConv);
-                }
-            }
-
-            var conversation = new Conversation
-            {
-                Name = dto.Name,
-                Type = dto.Type,
-                Avatar = dto.Avatar,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
-
-            _context.Conversations.Add(conversation);
-            await _context.SaveChangesAsync();
-
-            var members = new List<ConversationMember>
-            {
-                new ConversationMember
-                {
-                    ConversationId = conversation.Id,
-                    UserId = userId,
-                    Role = "admin",
-                    JoinedAt = DateTime.UtcNow
-                }
-            };
-
-            foreach (var memberId in dto.MemberIds)
-            {
-                members.Add(new ConversationMember
-                {
-                    ConversationId = conversation.Id,
-                    UserId = memberId,
-                    Role = "member",
-                    JoinedAt = DateTime.UtcNow
-                });
-            }
-
-            _context.ConversationMembers.AddRange(members);
-            await _context.SaveChangesAsync();
-
-            var result = new
-            {
-                id = conversation.Id,
-                name = conversation.Name,
-                type = conversation.Type,
-                avatar = conversation.Avatar,
-                createdAt = conversation.CreatedAt,
-                updatedAt = conversation.UpdatedAt
-            };
-
-            return CreatedAtAction(nameof(GetConversation), new { id = conversation.Id }, result);
+            return CreatedAtAction(nameof(GetConversation), new { id = ((dynamic)data!).id }, data);
         }
 
         // GET: api/conversations/{id}
         [HttpGet("{id}")]
-        public async Task<ActionResult<object>> GetConversation(int id)
+        public async Task<ActionResult> GetConversation(int id)
         {
-            var conversation = await _context.Conversations
-                .Where(c => c.Id == id)
-                .Select(c => new
-                {
-                    id = c.Id,
-                    name = c.Name,
-                    type = c.Type,
-                    avatar = c.Avatar,
-                    members = c.ConversationMembers
-                        .Where(cm => cm.LeftAt == null)
-                        .Select(cm => new
-                        {
-                            id = cm.User.Id,
-                            fullName = cm.User.FullName,
-                            avatar = cm.User.Avatar,
-                            role = cm.Role
-                        })
-                })
-                .FirstOrDefaultAsync();
+            var result = await _service.GetConversationById(id);
 
-            if (conversation == null)
-            {
+            if (result == null)
                 return NotFound(new { error = "Conversation not found" });
-            }
 
-            return Ok(conversation);
+            return Ok(result);
         }
 
         // GET: api/conversations/{id}/messages
         [HttpGet("{id}/messages")]
-        public async Task<ActionResult<IEnumerable<object>>> GetMessages(
+        public async Task<ActionResult> GetMessages(
             int id,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 50)
         {
-            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
-
-            var isMember = await _context.ConversationMembers
-                .AnyAsync(cm => cm.ConversationId == id && cm.UserId == userId && cm.LeftAt == null);
+            var (isMember, messages) = await _service.GetMessages(id, GetUserId(), page, pageSize);
 
             if (!isMember)
-            {
                 return Forbid();
-            }
 
-            var messages = await _context.Messages
-                .Where(m => m.ConversationId == id && !m.IsDeleted)
-                .OrderByDescending(m => m.CreatedAt)
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .Select(m => new
-                {
-                    id = m.Id,
-                    senderId = m.SenderId,
-                    senderName = m.Sender.FullName,
-                    senderAvatar = m.Sender.Avatar,
-                    content = m.Content,
-                    type = m.Type,
-                    fileUrl = m.FileUrl,
-                    fileName = m.FileName,
-                    fileSize = m.FileSize,
-                    isEdited = m.IsEdited,
-                    createdAt = m.CreatedAt,
-                    readBy = m.MessageReads.Select(mr => new
-                    {
-                        userId = mr.UserId,
-                        readAt = mr.ReadAt
-                    })
-                })
-                .ToListAsync();
-
-            return Ok(messages.OrderBy(m => m.createdAt));
+            return Ok(messages);
         }
     }
 
-    // DTO cho raw SQL result
+    // DTO cho raw SQL result — giữ ở đây vì chỉ dùng nội bộ trong data layer
     public class ConversationQueryResult
     {
         public int Id { get; set; }
@@ -292,13 +91,5 @@ namespace messenger.Controllers.site
         public bool IsMuted { get; set; }
         public int? LastSeenMessageId { get; set; }
         public DateTime SortDate { get; set; }
-    }
-
-    public class CreateConversationDto
-    {
-        public string? Name { get; set; }
-        public string Type { get; set; } = "private";
-        public string? Avatar { get; set; }
-        public List<int> MemberIds { get; set; } = new();
     }
 }
